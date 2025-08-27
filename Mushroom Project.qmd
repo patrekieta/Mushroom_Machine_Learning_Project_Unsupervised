@@ -1,0 +1,646 @@
+---
+title: "Mushroom Classification Supervised Machine Learning"
+format: 
+  html:
+    theme: flatly
+    code-fold: false
+    embed-resources: true
+---
+```{r, warning=FALSE}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(reshape2))
+suppressPackageStartupMessages(library(cluster))
+suppressPackageStartupMessages(library(factoextra))
+suppressPackageStartupMessages(library(NbClust))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(FactoMineR))
+suppressPackageStartupMessages(library(VIM))
+suppressPackageStartupMessages(library(dbscan))
+suppressPackageStartupMessages(library(Rtsne))
+suppressPackageStartupMessages(library(umap))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(NMF))
+set.seed(123)
+
+```
+
+
+```{css, echo = FALSE}
+.scrolling {
+  max-height: 300px;
+  overflow-y: auto;
+  max-width: 600px;
+}
+```
+# Introduction
+
+To begin this project we need to first discover or create a dataset to use. After some time of searching, I discovered the Mushroom dataset which includes artificial descriptions of various mushrooms. These mushrooms are generally coded as poisonous or edible, while including their additional characteristics. This data is based upon the Audobon Society Field Guide. This guide claims that there are no easy rules for determining the edibility of a mushroom. Let's see if that holds true for more advanced methods of supervised machine learning. For more information about this data, it can be found at the [UC Irvine Machine Learning Repository.](https://archive.ics.uci.edu/dataset/73/mushroom)
+
+First, we first need to load in our data. 
+
+```{r}
+#| attr-output: "style='font-size: 0.7em'"
+#| class-output: scrolling
+data <- read.csv("data/mushrooms.csv")
+
+head(data)
+summary(data)
+
+```
+
+
+
+Before we get too far, we should make sure we know what our column names are. 
+```{r}
+colnames(data)
+```
+
+We know based on the data description that the column "class" is coded as e: edible and p: poisonous. This see what our distribution of mushrooms looks like. 
+
+```{r}
+
+distribution <- table(data$class)
+distribution
+distribution[1] / (distribution[1] + distribution[2])
+distribution[2] / (distribution[1] + distribution[2])
+
+```
+
+This looks like a pretty even split so there probably isn't much wrangling that needs to occur with this data. Let's also check for any missing values in the data. 
+
+```{r}
+anyNA(data)
+```
+We can see that there are no missing values in this dataset. Now we can better understand our data. What are the other columns coded as? We can use the table that we generate to compare with the provided coding information from the UCI Repository. 
+
+```{r}
+#| fig-format: svg
+#| fig-width: 10
+#| fig-height: 16
+#| column: page
+
+data_long <- data %>% gather(data, "key", class:habitat)
+colnames(data_long) <- c("group", "value")
+data_long <- data_long[data_long$group != "class",]
+
+
+ggplot(data_long) +
+  geom_bar(aes(x = value, group = group)) +
+  facet_wrap(~group, ncol = 4, scales = "free") +
+  theme_minimal()
+
+```
+
+![Mushroom Column Codes](data/Mushroom Coding Table.png)
+![](data/Mushroom Coding Table 2.png)
+![](data/Mushroom Coding Table 3.png)
+
+Now that we have seen our data, let's remove the column for veil.type because it only has one factor. This isn't useful for our model and should help simplify our data. 
+
+```{r}
+### Remove veil type because it only has 1 factor
+data <- subset(data, select = -c(veil.type))
+
+```
+
+## Exploratory Analysis
+
+We can also see that some of our variables are predominantly one value. Let's take a closer look at these predictors to see if they might have an impact on our model if it is worth removing them in order to prevent an overly weighted predictor from impacting the model. 
+
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = class, y = gill.attachment, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Gill Attachment") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+
+table(data$class, data$gill.attachment)
+
+```
+Here we can see a pretty even split between the edible and poisonous classes. There appears to be a tendency for attached veils to be more often edible rather than poisonous
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = class, y = gill.spacing, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Gill Attachment") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+table(data$class, data$gill.spacing)
+
+
+```
+
+This is also pretty split when considering gill spacing. Here we can see a tendency for crowded gills to be edible more often. 
+
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = class, y = ring.number, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Gill Attachment") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+table(data$class, data$ring.number)
+
+data <- subset(data, select = -c(ring.number))
+
+```
+Here we can see a pretty big difference for mushrooms that have no ring numbers. This data might indicate that all mushrooms that have no rings would be poisonous but some research shows that this is not true. Therefore, I have removed this column from consideration in the model. 
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = class, y = veil.color, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Gill Attachment") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+table(data$class, data$veil.color)
+
+data <- subset(data, select = -c(veil.color))
+
+```
+
+In veil color we also see strong weighting towards a specific class based on the veil color. Therefore, I have removed this column from consideration in the model as well. 
+
+A fun fact about mushrooms is that typically only the ones with a bell shape. Let's take a look and see if that is true with our data. 
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = cap.shape, y = cap.color, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Cap Shape vs Cap Color") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+
+
+```
+
+It looks like this is mostly true but maybe we should avoid the pink and buff colored mushrooms. We can continue with this style graph to get a better idea of how our data looks. Based on some research, we know that odor can also be a strong indicator. Let's see how this looks in a graph. 
+
+```{r}
+#| class-output: scrolling
+#| 
+
+ggplot(data, aes(x = class, y = odor, col = class)) + 
+  geom_jitter(alpha = 0.5) + 
+  ggtitle("Gill Attachment") + 
+  scale_color_manual(breaks = c("e", "p"), 
+                     labels = c("Edible", "Poisonous"),
+                     values = c("green", "red"))
+table(data$class, data$odor)
+
+
+```
+
+It would appear that odor is a strong separator between out two classes. This might be something to remember as we start examining some models. 
+
+
+# Models
+
+## Data Cleaning
+For unsupervised learning, we need to prepare our data differently. Let's remove variables with only one factor and create a dataset without the class variable for clustering:
+
+```{r}
+# Remove veil.type because it only has 1 factor
+data_clean <- data
+
+# Separate features from class labels for unsupervised learning
+features_only <- subset(data_clean, select = -c(class))
+true_labels <- data_clean$class
+
+# Convert all features to factors for proper encoding
+col_names <- names(features_only)
+features_only[,col_names] <- lapply(features_only[,col_names], factor)
+
+# Create dummy variables for clustering algorithms
+features_numeric <- model.matrix(~ . - 1, data = features_only)
+```
+
+## Principal Component Analysis (PCA)
+
+Let's start with PCA to understand the dimensionality and main patterns in our data:
+
+```{r}
+# Perform PCA
+pca_result <- PCA(features_numeric, scale.unit = TRUE, graph = FALSE)
+
+# Visualize eigenvalues/variance explained
+fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 15))
+```
+
+```{r}
+# Plot individuals colored by true class (for validation)
+fviz_pca_ind(pca_result, 
+             col.ind = true_labels,
+             palette = c("green", "red"),
+             legend.title = "True Class",
+             repel = TRUE)
+```
+
+```{r}
+# Variable contributions to first two components
+fviz_pca_var(pca_result, 
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+```
+
+## K-means Clustering
+
+Now let's apply k-means clustering to discover natural groupings:
+
+```{r}
+# Determine optimal number of clusters using elbow method
+fviz_nbclust(features_numeric, kmeans, method = "wss", k.max = 10)
+```
+
+```{r}
+# Determine optimal number of clusters using silhouette method
+fviz_nbclust(features_numeric, kmeans, method = "silhouette", k.max = 10)
+```
+
+```{r}
+# Perform k-means with k=2 (since we know there are 2 true classes)
+kmeans_result <- kmeans(features_numeric, centers = 2, nstart = 25)
+
+# Visualize clusters in PCA space
+fviz_cluster(kmeans_result, data = features_numeric, 
+             palette = c("#2E9FDF", "#00AFBB"), 
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw())
+```
+
+```{r}
+# Compare clustering results with true labels
+table(kmeans_result$cluster, true_labels)
+
+# Calculate clustering accuracy
+cluster_accuracy <- max(
+  sum(kmeans_result$cluster == 1 & true_labels == "e") + sum(kmeans_result$cluster == 2 & true_labels == "p"),
+  sum(kmeans_result$cluster == 1 & true_labels == "p") + sum(kmeans_result$cluster == 2 & true_labels == "e")
+) / length(true_labels)
+
+paste("K-means clustering accuracy:", round(cluster_accuracy, 4))
+```
+
+## Matrix Factorization (Non-negative Matrix Factorization)
+
+Let's apply Non-negative Matrix Factorization (NMF) to discover latent factors in our data:
+
+```{r}
+
+# Prepare data for NMF (NMF requires non-negative values)
+# Add small constant to ensure all values are positive
+features_nmf <- features_numeric + abs(min(features_numeric)) + 0.01
+
+# Use a subset for computational efficiency
+subset_indices <- sample(nrow(features_nmf), 1000)
+features_subset <- features_nmf[subset_indices, ]
+true_labels_subset <- true_labels[subset_indices]
+
+# Perform NMF with rank 2 (to match our expected number of groups)
+nmf_result <- nmf(t(features_subset), rank = 2, method = "brunet", nrun = 10, seed = 123)
+
+# Extract basis and coefficient matrices
+W <- basis(nmf_result)  # Feature loadings
+H <- coef(nmf_result)   # Sample coefficients
+
+# Plot the factorization quality
+plot(nmf_result)
+```
+
+```{r}
+# Visualize the basis matrix (feature importance for each factor)
+pheatmap(W, 
+         scale = "row",
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         color = colorRampPalette(c("white", "red"))(100),
+         main = "NMF Basis Matrix - Feature Loadings",
+         show_rownames = FALSE)
+```
+
+```{r}
+# Assign samples to factors based on highest coefficient
+nmf_clusters <- apply(H, 2, which.max)
+
+# Visualize sample assignments in coefficient space
+coeff_df <- data.frame(
+  Factor1 = H[1, ],
+  Factor2 = H[2, ],
+  TrueClass = true_labels_subset,
+  NMFCluster = factor(nmf_clusters)
+)
+
+ggplot(coeff_df, aes(x = Factor1, y = Factor2, color = TrueClass, shape = NMFCluster)) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_manual(values = c("green", "red"),
+                     labels = c("Edible", "Poisonous")) +
+  labs(title = "NMF Factor Space Representation",
+       x = "Factor 1 Coefficient", y = "Factor 2 Coefficient",
+       color = "True Class", shape = "NMF Cluster") +
+  theme_minimal()
+```
+
+```{r}
+# Compare NMF clustering results with true labels
+table(nmf_clusters, true_labels_subset)
+
+# Calculate NMF clustering accuracy
+nmf_accuracy <- max(
+  sum(nmf_clusters == 1 & true_labels_subset == "e") + sum(nmf_clusters == 2 & true_labels_subset == "p"),
+  sum(nmf_clusters == 1 & true_labels_subset == "p") + sum(nmf_clusters == 2 & true_labels_subset == "e")
+) / length(true_labels_subset)
+
+paste("NMF clustering accuracy:", round(nmf_accuracy, 4))
+```
+
+```{r}
+# Examine which features contribute most to each factor
+feature_importance <- data.frame(
+  Feature = rownames(W),
+  Factor1 = W[, 1],
+  Factor2 = W[, 2]
+)
+
+# Top features for Factor 1
+cat("Top 10 features for Factor 1:\n")
+top_factor1 <- feature_importance[order(feature_importance$Factor1, decreasing = TRUE)[1:10], ]
+print(top_factor1)
+
+cat("\nTop 10 features for Factor 2:\n")
+top_factor2 <- feature_importance[order(feature_importance$Factor2, decreasing = TRUE)[1:10], ]
+print(top_factor2)
+```
+
+## DBSCAN Clustering
+
+Let's try DBSCAN to identify density-based clusters:
+
+```{r}
+# Find optimal eps parameter
+kNNdistplot(features_subset, k = 4)
+abline(h = 3, lty = 2, col = "red")
+```
+
+```{r}
+# Apply DBSCAN
+dbscan_result <- dbscan(features_subset, eps = 3, minPts = 4)
+
+# Visualize DBSCAN results in PCA space
+pca_subset <- PCA(features_subset, scale.unit = TRUE, graph = FALSE)
+fviz_cluster(list(data = features_subset, cluster = dbscan_result$cluster),
+             palette = c("#999999", "#E69F00", "#56B4E9"), 
+             geom = "point",
+             ellipse = FALSE,
+             ggtheme = theme_bw())
+```
+
+```{r}
+# Compare DBSCAN results with true labels
+table(dbscan_result$cluster, true_labels_subset)
+cat("Number of noise points:", sum(dbscan_result$cluster == 0))
+```
+
+## t-SNE Visualization
+
+Let's use t-SNE for non-linear dimensionality reduction:
+
+```{r}
+# Apply t-SNE (using subset for computational efficiency)
+tsne_result <- Rtsne(features_subset, dims = 2, perplexity = 30, verbose = FALSE)
+
+# Create t-SNE plot colored by true labels
+tsne_df <- data.frame(
+  x = tsne_result$Y[, 1],
+  y = tsne_result$Y[, 2],
+  class = true_labels_subset
+)
+
+ggplot(tsne_df, aes(x = x, y = y, color = class)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("green", "red"),
+                     labels = c("Edible", "Poisonous")) +
+  labs(title = "t-SNE Visualization of Mushroom Features",
+       x = "t-SNE 1", y = "t-SNE 2",
+       color = "True Class") +
+  theme_minimal()
+```
+
+## Feature Importance through Clustering
+
+Let's examine which features are most important for the discovered clusters:
+
+```{r}
+# Calculate feature means by cluster
+cluster_means <- aggregate(features_numeric, by = list(kmeans_result$cluster), FUN = mean)
+rownames(cluster_means) <- paste("Cluster", cluster_means$Group.1)
+cluster_means$Group.1 <- NULL
+
+# Create heatmap of feature means by cluster
+pheatmap(as.matrix(cluster_means), 
+         scale = "column",
+         clustering_distance_rows = "euclidean",
+         clustering_distance_cols = "euclidean",
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         main = "Feature Means by Cluster")
+```
+
+## Association Analysis
+
+Let's look at feature associations within the discovered clusters:
+
+```{r}
+# Convert back to factors for association analysis
+features_factor <- data.frame(lapply(features_only, factor))
+features_factor$cluster <- factor(kmeans_result$cluster)
+
+# Create contingency tables for key features vs clusters
+key_features <- c("odor", "spore.print.color", "gill.color", "cap.color")
+
+for(feature in key_features) {
+  cat("\n", feature, "vs Cluster:\n")
+  print(table(features_factor[[feature]], features_factor$cluster))
+}
+```
+
+## Cluster Validation
+
+Let's compute various cluster validation metrics:
+
+```{r}
+# Silhouette analysis
+sil_analysis <- silhouette(kmeans_result$cluster, dist(features_numeric))
+fviz_silhouette(sil_analysis)
+```
+
+```{r}
+
+# Within-cluster sum of squares
+wcss <- kmeans_result$tot.withinss
+cat("Within-cluster sum of squares:", wcss, "\n")
+
+# Between-cluster sum of squares
+bcss <- kmeans_result$betweenss
+cat("Between-cluster sum of squares:", bcss, "\n")
+
+# Calinski-Harabasz index
+ch_index <- (bcss / (2 - 1)) / (wcss / (nrow(features_numeric) - 2))
+cat("Calinski-Harabasz index:", ch_index, "\n")
+
+# Average silhouette width
+avg_sil_width <- mean(sil_analysis[, "sil_width"])
+cat("Average silhouette width:", avg_sil_width, "\n")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Generalized Linear Models
+
+Let's begin with a basic generalized linear model to see what we can learn about the data. Given the binary outcome of our data, we will be using the binomial distribution to determine the probabilities. 
+
+```{r}
+
+glm_mod <- glm("class ~ .", data = train, family = "binomial")
+
+pred <- predict(glm_mod, newdata = test, type = "response")
+pred <- ifelse(pred > 0.50, "p", "e")
+
+table(pred, test$class)
+
+
+```
+
+When comparing our predictions from the model versus the actual data in our test dataset, we can see we have a perfect prediction. However, this could also be a sign of overfitting. This is especially true as we have considered all columns in the model. Let's try reducing our model to the more impactful predictors which we have found up above. 
+
+```{r}
+glm_mod_reduce <- glm("class ~ cap.shape + cap.color + odor + ring.type + stalk.root + stalk.shape + cap.surface", data = train, family = "binomial")
+
+pred <- predict(glm_mod_reduce, newdata = test, type = "response")
+pred <- ifelse(pred > 0.50, "p", "e")
+
+
+
+table(pred, test$class)
+
+
+
+```
+
+
+This model is still pretty good but we can see an example of a type 2 error as well as 2 examples of a type 1 error. This means that our model is still not perfect though. By using a simple anova comparison between the two models. We can also see that the reduced model is preferred over the full model. 
+
+```{r}
+anova(glm_mod, glm_mod_reduce)
+
+plot(glm_mod)
+
+plot(glm_mod_reduce)
+
+```
+
+
+
+## Support Vector Machine
+
+Now we will can try out some other models. Let's try a SVM model. SVM models can be excellent at find the optimal decision boundary when dealing with classification problems. We can expect our SVM model to perform better than our GLM due to the high dimensionality of the data. 
+
+```{r}
+
+svm_mod <- svm(class ~. , data=train)
+summary(svm_mod)
+
+
+
+svm_pred <- predict(svm_mod, newdata = test)
+
+table(svm_pred, test$class)
+
+```
+
+This SVM model performs better than the GLM. We see only one example of a type 1 error which is an improved result. Unfortunately, due to the multiple dimensions in our data and the fact that it is discrete, it is difficult to create a classification plot. 
+
+## Random Forest
+
+Now lets try a random forest model. These trees are known to be good models when dealing with classification problems. Will it be any better than the previous models? 
+
+```{r}
+
+
+rf_mod <- randomForest(class ~ ., ntree=1000, data = train)
+
+
+```
+
+
+```{r}
+varImpPlot(rf_mod)
+```
+
+
+With our random forest we can take a look at what our most important predictors are. As we guessed during our initial exploration, odor has a very strong affect on the model. Spore print color also appears to be a strong predictor which is interesting as we did not choose to use it in our previous GLM model. Below is a plot of the tree that was created. 
+
+```{r}
+plot.getTree(rf_mod, main = "Random Forest Tree")
+```
+
+
+
+Finally we can create our predictions and compare it against our test data. 
+
+```{r}
+
+rf_pred <- predict(rf_mod, newdata = test)
+
+table(rf_pred, test$class)
+
+```
+
+
+Now we finally have a perfect match between our model and the test data. This means that the random forest model was the best performing model of the three that were tested. 
+
+# Conclusion
+
+While all of these model do a great job at the problem we are attempting to solve, it appears that the random forest model has handled the classification with the most accuracy. With some additional tuning, I'm sure that we could get perfect results from all 3 models. In addition to its accuracy, I also find the random forest tree to be the easiest to understand the result. Theoretically anyone could take the tree output and use it to get a decent result at picking mushrooms in the wilderness. 
+
+If we were to expand on this problem, we would want to consider additional training with new data. Based on the initial exploration graphs, we can see that some predictors have very small sample sizes which could result in some incorrect assumptions in all our models. These models give us a great start to understanding the toxicity of mushrooms but I would still prefer a professional joins me before I stake my life on any of these models.
+
+[Github Link](https://github.com/patrekieta/Mushroom-Machine-Learning-Project)
