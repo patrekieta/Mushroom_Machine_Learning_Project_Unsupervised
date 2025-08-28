@@ -1,5 +1,5 @@
 ---
-title: "Mushroom Classification Supervised Machine Learning"
+title: "Mushroom Classification Unsupervised Machine Learning"
 format: 
   html:
     theme: flatly
@@ -16,15 +16,12 @@ suppressPackageStartupMessages(library(NbClust))
 suppressPackageStartupMessages(library(corrplot))
 suppressPackageStartupMessages(library(FactoMineR))
 suppressPackageStartupMessages(library(VIM))
-suppressPackageStartupMessages(library(dbscan))
+suppressPackageStartupMessages(library(NMF))
 suppressPackageStartupMessages(library(Rtsne))
 suppressPackageStartupMessages(library(umap))
 suppressPackageStartupMessages(library(pheatmap))
-suppressPackageStartupMessages(library(NMF))
 set.seed(123)
-
 ```
-
 
 ```{css, echo = FALSE}
 .scrolling {
@@ -33,11 +30,14 @@ set.seed(123)
   max-width: 600px;
 }
 ```
+
 # Introduction
 
-To begin this project we need to first discover or create a dataset to use. After some time of searching, I discovered the Mushroom dataset which includes artificial descriptions of various mushrooms. These mushrooms are generally coded as poisonous or edible, while including their additional characteristics. This data is based upon the Audobon Society Field Guide. This guide claims that there are no easy rules for determining the edibility of a mushroom. Let's see if that holds true for more advanced methods of supervised machine learning. For more information about this data, it can be found at the [UC Irvine Machine Learning Repository.](https://archive.ics.uci.edu/dataset/73/mushroom)
+In this project, we'll explore the Mushroom dataset using unsupervised machine learning techniques to discover hidden patterns and natural groupings within mushroom characteristics. Rather than predicting edibility directly, we'll investigate whether mushrooms naturally cluster into distinct groups based on their physical features, and examine how these discovered patterns relate to the known edible/poisonous classifications.
 
-First, we first need to load in our data. 
+The dataset includes artificial descriptions of various mushrooms with their characteristics, based upon the Audobon Society Field Guide. Using unsupervised learning, we'll attempt to uncover the underlying structure in mushroom features without using the edibility labels during analysis. For more information about this data, it can be found at the [UC Irvine Machine Learning Repository.](https://archive.ics.uci.edu/dataset/73/mushroom)
+
+First, we need to load in our data.
 
 ```{r}
 #| attr-output: "style='font-size: 0.7em'"
@@ -46,33 +46,29 @@ data <- read.csv("data/mushrooms.csv")
 
 head(data)
 summary(data)
-
 ```
 
-
-
-Before we get too far, we should make sure we know what our column names are. 
+Before we get too far, we should make sure we know what our column names are.
 ```{r}
 colnames(data)
 ```
 
-We know based on the data description that the column "class" is coded as e: edible and p: poisonous. This see what our distribution of mushrooms looks like. 
+Let's examine the distribution of our known classes (which we'll use later for validation but not during clustering):
 
 ```{r}
-
 distribution <- table(data$class)
 distribution
 distribution[1] / (distribution[1] + distribution[2])
 distribution[2] / (distribution[1] + distribution[2])
-
 ```
 
-This looks like a pretty even split so there probably isn't much wrangling that needs to occur with this data. Let's also check for any missing values in the data. 
+This shows a pretty even split. Let's also check for any missing values in the data.
 
 ```{r}
 anyNA(data)
 ```
-We can see that there are no missing values in this dataset. Now we can better understand our data. What are the other columns coded as? We can use the table that we generate to compare with the provided coding information from the UCI Repository. 
+
+We can see that there are no missing values in this dataset. Now let's visualize the distribution of features:
 
 ```{r}
 #| fig-format: svg
@@ -84,25 +80,15 @@ data_long <- data %>% gather(data, "key", class:habitat)
 colnames(data_long) <- c("group", "value")
 data_long <- data_long[data_long$group != "class",]
 
-
 ggplot(data_long) +
   geom_bar(aes(x = value, group = group)) +
   facet_wrap(~group, ncol = 4, scales = "free") +
   theme_minimal()
-
 ```
 
 ![Mushroom Column Codes](data/Mushroom Coding Table.png)
 ![](data/Mushroom Coding Table 2.png)
 ![](data/Mushroom Coding Table 3.png)
-
-Now that we have seen our data, let's remove the column for veil.type because it only has one factor. This isn't useful for our model and should help simplify our data. 
-
-```{r}
-### Remove veil type because it only has 1 factor
-data <- subset(data, select = -c(veil.type))
-
-```
 
 ## Exploratory Analysis
 
@@ -155,8 +141,6 @@ ggplot(data, aes(x = class, y = ring.number, col = class)) +
                      values = c("green", "red"))
 table(data$class, data$ring.number)
 
-data <- subset(data, select = -c(ring.number))
-
 ```
 Here we can see a pretty big difference for mushrooms that have no ring numbers. This data might indicate that all mushrooms that have no rings would be poisonous but some research shows that this is not true. Therefore, I have removed this column from consideration in the model. 
 
@@ -172,7 +156,6 @@ ggplot(data, aes(x = class, y = veil.color, col = class)) +
                      values = c("green", "red"))
 table(data$class, data$veil.color)
 
-data <- subset(data, select = -c(veil.color))
 
 ```
 
@@ -213,15 +196,13 @@ table(data$class, data$odor)
 
 It would appear that odor is a strong separator between out two classes. This might be something to remember as we start examining some models. 
 
+## Data Preprocessing for Unsupervised Learning
 
-# Models
-
-## Data Cleaning
 For unsupervised learning, we need to prepare our data differently. Let's remove variables with only one factor and create a dataset without the class variable for clustering:
 
 ```{r}
 # Remove veil.type because it only has 1 factor
-data_clean <- data
+data_clean <- subset(data, select = -c(veil.type))
 
 # Separate features from class labels for unsupervised learning
 features_only <- subset(data_clean, select = -c(class))
@@ -233,19 +214,41 @@ features_only[,col_names] <- lapply(features_only[,col_names], factor)
 
 # Create dummy variables for clustering algorithms
 features_numeric <- model.matrix(~ . - 1, data = features_only)
+
+# Remove constant/zero variance columns
+constant_cols <- apply(features_numeric, 2, function(x) var(x) == 0)
+if(any(constant_cols)) {
+  cat("Removing", sum(constant_cols), "constant columns:", names(which(constant_cols)), "\n")
+  features_numeric <- features_numeric[, !constant_cols]
+}
+
+# Check for near-zero variance columns and remove if necessary
+near_zero_var <- apply(features_numeric, 2, function(x) var(x) < 1e-8)
+if(any(near_zero_var)) {
+  cat("Removing", sum(near_zero_var), "near-zero variance columns\n")
+  features_numeric <- features_numeric[, !near_zero_var]
+}
 ```
+
+# Unsupervised Learning Analysis
 
 ## Principal Component Analysis (PCA)
 
-Let's start with PCA to understand the dimensionality and main patterns in our data:
+Principal Component Analysis helps us understand which combinations of features explain the most variance in our dataset. By reducing the dimensionality of our data, we can identify the most important patterns and visualize the structure of our mushroom characteristics in a lower-dimensional space.
 
 ```{r}
-# Perform PCA
-pca_result <- PCA(features_numeric, scale.unit = TRUE, graph = FALSE)
+# Check data dimensions after preprocessing
+cat("Data dimensions:", dim(features_numeric), "\n")
+cat("Number of features:", ncol(features_numeric), "\n")
+
+# Perform PCA with proper scaling
+pca_result <- PCA(features_numeric, scale.unit = TRUE, ncp = min(10, ncol(features_numeric)), graph = FALSE)
 
 # Visualize eigenvalues/variance explained
 fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 15))
 ```
+
+The scree plot above shows how much variance each principal component explains. The steep drop-off after the first few components suggests that most of the information in our mushroom dataset can be captured by just a handful of principal components, indicating that many of the original features are redundant or highly correlated.
 
 ```{r}
 # Plot individuals colored by true class (for validation)
@@ -256,6 +259,8 @@ fviz_pca_ind(pca_result,
              repel = TRUE)
 ```
 
+This biplot reveals how individual mushrooms are distributed in the first two principal component space. Notice how the green (edible) and red (poisonous) mushrooms tend to separate into distinct regions, suggesting that the principal components capture meaningful differences related to edibility. The clear separation indicates that unsupervised dimensionality reduction naturally discovers patterns that align with mushroom toxicity.
+
 ```{r}
 # Variable contributions to first two components
 fviz_pca_var(pca_result, 
@@ -264,19 +269,25 @@ fviz_pca_var(pca_result,
              repel = TRUE)
 ```
 
+The variable contribution plot shows which original features contribute most strongly to the first two principal components. Features colored in red have the highest contributions and are most important for explaining the variance captured by these components. This helps us understand which mushroom characteristics are most influential in creating the natural separation we observed in the previous plot.
+
 ## K-means Clustering
 
-Now let's apply k-means clustering to discover natural groupings:
+K-means clustering will help us discover natural groupings in our data by partitioning mushrooms into clusters based on similarity of their features. We'll start by determining the optimal number of clusters using two different methods.
 
 ```{r}
 # Determine optimal number of clusters using elbow method
 fviz_nbclust(features_numeric, kmeans, method = "wss", k.max = 10)
 ```
 
+The elbow method plot shows the total within-cluster sum of squares for different numbers of clusters. We look for an "elbow" point where adding more clusters doesn't dramatically reduce the within-cluster variance. This helps us identify the natural number of groups in our data.
+
 ```{r}
 # Determine optimal number of clusters using silhouette method
 fviz_nbclust(features_numeric, kmeans, method = "silhouette", k.max = 10)
 ```
+
+The silhouette method provides another perspective on optimal cluster number by measuring how well-separated the clusters are. Higher silhouette scores indicate better-defined, more distinct clusters. This method often provides clearer guidance than the elbow method for determining the best number of clusters.
 
 ```{r}
 # Perform k-means with k=2 (since we know there are 2 true classes)
@@ -290,6 +301,8 @@ fviz_cluster(kmeans_result, data = features_numeric,
              ggtheme = theme_bw())
 ```
 
+This visualization projects our k-means clustering results onto the first two principal components, making it easy to see how well the algorithm has separated the data. The ellipses show the boundaries of each discovered cluster, and the clear separation suggests that k-means has successfully identified distinct groups in the mushroom characteristics.
+
 ```{r}
 # Compare clustering results with true labels
 table(kmeans_result$cluster, true_labels)
@@ -300,34 +313,68 @@ cluster_accuracy <- max(
   sum(kmeans_result$cluster == 1 & true_labels == "p") + sum(kmeans_result$cluster == 2 & true_labels == "e")
 ) / length(true_labels)
 
-paste("K-means clustering accuracy:", round(cluster_accuracy, 4))
+cat("K-means clustering accuracy:", round(cluster_accuracy, 4))
 ```
+
+The confusion matrix above shows how well our unsupervised k-means clustering aligns with the true edible/poisonous labels. High accuracy here would indicate that the natural groupings in mushroom features strongly correspond to their toxicity, validating that there are indeed detectable patterns that distinguish safe from dangerous mushrooms.
 
 ## Matrix Factorization (Non-negative Matrix Factorization)
 
-Let's apply Non-negative Matrix Factorization (NMF) to discover latent factors in our data:
+Non-negative Matrix Factorization (NMF) decomposes our feature matrix into two smaller matrices that reveal latent factors in the data. Unlike other clustering methods, NMF shows us which specific combinations of features define each group, making it particularly interpretable for understanding what distinguishes different types of mushrooms.
 
 ```{r}
-
-# Prepare data for NMF (NMF requires non-negative values)
-# Add small constant to ensure all values are positive
-features_nmf <- features_numeric + abs(min(features_numeric)) + 0.01
-
 # Use a subset for computational efficiency
-subset_indices <- sample(nrow(features_nmf), 1000)
-features_subset <- features_nmf[subset_indices, ]
+set.seed(123)
+subset_indices <- sample(nrow(features_numeric), 1000)
+features_subset <- features_numeric[subset_indices, ]
 true_labels_subset <- true_labels[subset_indices]
 
-# Perform NMF with rank 2 (to match our expected number of groups)
-nmf_result <- nmf(t(features_subset), rank = 2, method = "brunet", nrun = 10, seed = 123)
+# Prepare data for NMF (NMF requires non-negative values)
+features_for_nmf <- as.matrix(features_subset)
+
+# Check for any rows or columns with all zeros or constant values
+zero_rows <- apply(features_for_nmf, 1, function(x) length(unique(x)) <= 1)
+zero_cols <- apply(features_for_nmf, 2, function(x) var(x) == 0 || all(is.na(x)))
+
+cat("Initial dimensions:", dim(features_for_nmf), "\n")
+
+if(any(zero_rows)) {
+  cat("Removing", sum(zero_rows), "constant rows\n")
+  features_for_nmf <- features_for_nmf[!zero_rows, , drop = FALSE]
+  true_labels_nmf <- true_labels_subset[!zero_rows]
+} else {
+  true_labels_nmf <- true_labels_subset
+}
+
+if(any(zero_cols)) {
+  cat("Removing", sum(zero_cols), "constant/NA columns\n")
+  features_for_nmf <- features_for_nmf[, !zero_cols, drop = FALSE]
+}
+
+# Ensure all values are positive for NMF - EXPLICIT CREATION
+min_val <- min(features_for_nmf)
+cat("Original min value:", min_val, "\n")
+
+features_nmf_positive <- features_for_nmf - min_val + 1
+
+# Verify the transformation worked
+cat("Min value after transformation:", min(features_nmf_positive), "\n")
+cat("Max value after transformation:", max(features_nmf_positive), "\n")
+cat("Final dimensions for NMF:", dim(features_nmf_positive), "\n")
+
+# Perform NMF with rank 2
+nmf_result <- nmf(t(features_nmf_positive), rank = 2, method = "lee", nrun = 3, seed = 123)
 
 # Extract basis and coefficient matrices
 W <- basis(nmf_result)  # Feature loadings
 H <- coef(nmf_result)   # Sample coefficients
 
-# Plot the factorization quality
-plot(nmf_result)
+# Show NMF summary
+summary(nmf_result)
+cat("NMF completed successfully\n")
 ```
+
+This preprocessing step is crucial for NMF success. We sample a subset of data for computational efficiency, then carefully clean the data by removing any rows or columns that could cause numerical issues. The transformation to positive values is required because NMF algorithms can only work with non-negative matrices. The diagnostic output helps us verify that the data preparation was successful.
 
 ```{r}
 # Visualize the basis matrix (feature importance for each factor)
@@ -338,7 +385,21 @@ pheatmap(W,
          color = colorRampPalette(c("white", "red"))(100),
          main = "NMF Basis Matrix - Feature Loadings",
          show_rownames = FALSE)
+
+# Also create a simpler visualization of top features per factor
+top_features_per_factor <- 10
+for(factor_idx in 1:ncol(W)) {
+  cat("\nTop", top_features_per_factor, "features for Factor", factor_idx, ":\n")
+  top_indices <- order(W[, factor_idx], decreasing = TRUE)[1:top_features_per_factor]
+  top_features <- data.frame(
+    Feature = rownames(W)[top_indices],
+    Loading = W[top_indices, factor_idx]
+  )
+  print(top_features)
+}
 ```
+
+The heatmap above shows how much each original feature contributes to each discovered factor. Red areas indicate high contributions, revealing which feature combinations define each factor. The ranked lists below the heatmap make it easy to identify the most important features for each factor, helping us understand what biological characteristics distinguish the discovered groups.
 
 ```{r}
 # Assign samples to factors based on highest coefficient
@@ -348,7 +409,7 @@ nmf_clusters <- apply(H, 2, which.max)
 coeff_df <- data.frame(
   Factor1 = H[1, ],
   Factor2 = H[2, ],
-  TrueClass = true_labels_subset,
+  TrueClass = true_labels_nmf,
   NMFCluster = factor(nmf_clusters)
 )
 
@@ -362,18 +423,22 @@ ggplot(coeff_df, aes(x = Factor1, y = Factor2, color = TrueClass, shape = NMFClu
   theme_minimal()
 ```
 
+This scatter plot shows how each mushroom is represented in the two-factor space discovered by NMF. The x and y axes represent the strength of each factor for individual mushrooms. Points are colored by their true edibility and shaped by their NMF cluster assignment. Strong separation between colors indicates that the factors capture meaningful biological differences related to toxicity.
+
 ```{r}
 # Compare NMF clustering results with true labels
-table(nmf_clusters, true_labels_subset)
+table(nmf_clusters, true_labels_nmf)
 
 # Calculate NMF clustering accuracy
 nmf_accuracy <- max(
-  sum(nmf_clusters == 1 & true_labels_subset == "e") + sum(nmf_clusters == 2 & true_labels_subset == "p"),
-  sum(nmf_clusters == 1 & true_labels_subset == "p") + sum(nmf_clusters == 2 & true_labels_subset == "e")
-) / length(true_labels_subset)
+  sum(nmf_clusters == 1 & true_labels_nmf == "e") + sum(nmf_clusters == 2 & true_labels_nmf == "p"),
+  sum(nmf_clusters == 1 & true_labels_nmf == "p") + sum(nmf_clusters == 2 & true_labels_nmf == "e")
+) / length(true_labels_nmf)
 
-paste("NMF clustering accuracy:", round(nmf_accuracy, 4))
+cat("NMF clustering accuracy:", round(nmf_accuracy, 4))
 ```
+
+The confusion matrix reveals how well the NMF-discovered factors align with the true edible/poisonous classifications. Perfect or near-perfect accuracy would suggest that the latent factors NMF discovered directly correspond to the biological mechanisms that determine mushroom toxicity.
 
 ```{r}
 # Examine which features contribute most to each factor
@@ -393,38 +458,126 @@ top_factor2 <- feature_importance[order(feature_importance$Factor2, decreasing =
 print(top_factor2)
 ```
 
-## DBSCAN Clustering
+These ranked lists show which specific mushroom features are most strongly associated with each discovered factor. This is one of NMF's key advantages - it tells us not just that there are two groups, but exactly which combinations of physical characteristics define each group. This interpretability makes NMF particularly valuable for understanding the biological basis of the patterns we've discovered.
 
-Let's try DBSCAN to identify density-based clusters:
+## Hierarchical Clustering
 
-```{r}
-# Find optimal eps parameter
-kNNdistplot(features_subset, k = 4)
-abline(h = 3, lty = 2, col = "red")
-```
+Hierarchical clustering builds a tree-like structure (dendrogram) showing how mushrooms group together at different levels of similarity. Unlike k-means, it doesn't require us to specify the number of clusters in advance and shows the relationships between clusters at multiple scales.
 
 ```{r}
-# Apply DBSCAN
-dbscan_result <- dbscan(features_subset, eps = 3, minPts = 4)
+# Calculate distance matrix (using the subset we created earlier)
+dist_matrix <- dist(features_subset, method = "euclidean")
+hc_result <- hclust(dist_matrix, method = "ward.D2")
 
-# Visualize DBSCAN results in PCA space
-pca_subset <- PCA(features_subset, scale.unit = TRUE, graph = FALSE)
-fviz_cluster(list(data = features_subset, cluster = dbscan_result$cluster),
-             palette = c("#999999", "#E69F00", "#56B4E9"), 
-             geom = "point",
-             ellipse = FALSE,
-             ggtheme = theme_bw())
+# Plot dendrogram
+fviz_dend(hc_result, k = 2, 
+          cex = 0.5,
+          k_colors = c("#2E9FDF", "#00AFBB"),
+          color_labels_by_k = TRUE,
+          rect = TRUE)
 ```
+
+The dendrogram above shows the hierarchical structure of mushroom relationships. The height of each branch indicates the distance between clusters when they merge. The colored rectangles highlight the two main clusters we've identified. Notice how the tree splits into two major branches, suggesting a natural binary division in the mushroom characteristics.
 
 ```{r}
-# Compare DBSCAN results with true labels
-table(dbscan_result$cluster, true_labels_subset)
-cat("Number of noise points:", sum(dbscan_result$cluster == 0))
+# Cut tree to get clusters
+hc_clusters <- cutree(hc_result, k = 2)
+
+# Visualize hierarchical clustering results in PCA space
+# Use the PCA coordinates we already computed to avoid the constant column error
+pca_coords <- get_pca_ind(pca_result)$coord[subset_indices, 1:2]
+
+hc_cluster_df <- data.frame(
+  PC1 = pca_coords[, 1],
+  PC2 = pca_coords[, 2],
+  Cluster = factor(hc_clusters),
+  TrueClass = true_labels_subset
+)
+
+ggplot(hc_cluster_df, aes(x = PC1, y = PC2, color = Cluster, shape = TrueClass)) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_manual(values = c("#2E9FDF", "#00AFBB")) +
+  scale_shape_manual(values = c(16, 17), labels = c("Edible", "Poisonous")) +
+  labs(title = "Hierarchical Clustering Results in PCA Space",
+       x = "First Principal Component",
+       y = "Second Principal Component") +
+  theme_bw() +
+  stat_ellipse(aes(color = Cluster), type = "norm", level = 0.68)
 ```
+
+This plot projects the hierarchical clustering results onto the PCA space, allowing us to see both the discovered clusters (colors) and true classifications (shapes) simultaneously. The ellipses show the approximate boundaries of each cluster. Strong alignment between cluster colors and shape patterns would indicate that hierarchical clustering successfully identified the edible/poisonous distinction.
+
+```{r}
+# Compare hierarchical clustering results with true labels
+table(hc_clusters, true_labels_subset)
+
+# Calculate hierarchical clustering accuracy
+hc_accuracy <- max(
+  sum(hc_clusters == 1 & true_labels_subset == "e") + sum(hc_clusters == 2 & true_labels_subset == "p"),
+  sum(hc_clusters == 1 & true_labels_subset == "p") + sum(hc_clusters == 2 & true_labels_subset == "e")
+) / length(true_labels_subset)
+
+cat("Hierarchical clustering accuracy:", round(hc_accuracy, 4))
+```
+
+The confusion matrix quantifies how well hierarchical clustering recovered the true edible/poisonous groupings. High accuracy suggests that mushrooms with similar physical characteristics tend to have similar edibility, supporting the hypothesis that there are detectable patterns in mushroom features that relate to toxicity.
+
+```{r}
+# Explore different numbers of clusters
+cluster_stats <- data.frame(
+  k = 2:6,
+  within_ss = numeric(5),
+  between_ss = numeric(5)
+)
+
+for(i in 2:6) {
+  clusters_k <- cutree(hc_result, k = i)
+  
+  # Calculate within and between cluster sum of squares
+  within_ss <- 0
+  between_ss <- 0
+  overall_center <- colMeans(features_subset)
+  
+  for(j in 1:i) {
+    cluster_indices <- which(clusters_k == j)
+    if(length(cluster_indices) > 0) {
+      cluster_data <- features_subset[cluster_indices, , drop = FALSE]
+      cluster_center <- colMeans(cluster_data)
+      
+      # Calculate within-cluster sum of squares
+      if(nrow(cluster_data) > 0) {
+        cluster_data_matrix <- as.matrix(cluster_data)
+        cluster_center_matrix <- matrix(rep(cluster_center, nrow(cluster_data)), 
+                                      nrow = nrow(cluster_data), byrow = TRUE)
+        within_ss <- within_ss + sum((cluster_data_matrix - cluster_center_matrix)^2)
+      }
+      
+      # Calculate between-cluster sum of squares
+      between_ss <- between_ss + length(cluster_indices) * sum((cluster_center - overall_center)^2)
+    }
+  }
+  
+  cluster_stats[i-1, "within_ss"] <- within_ss
+  cluster_stats[i-1, "between_ss"] <- between_ss
+}
+
+print(cluster_stats)
+
+# Plot the within-cluster sum of squares (elbow method)
+ggplot(cluster_stats, aes(x = k, y = within_ss)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Hierarchical Clustering: Within-cluster Sum of Squares",
+       x = "Number of Clusters (k)",
+       y = "Within-cluster Sum of Squares") +
+  theme_minimal()
+```
+
+This analysis explores how cluster quality changes as we increase the number of clusters. The table shows within-cluster and between-cluster sum of squares for different values of k. The plot below helps identify the optimal number of clusters by looking for an "elbow" where additional clusters provide diminishing returns in terms of reducing within-cluster variance.
 
 ## t-SNE Visualization
 
-Let's use t-SNE for non-linear dimensionality reduction:
+t-SNE (t-Distributed Stochastic Neighbor Embedding) provides a non-linear dimensionality reduction that can reveal complex patterns not captured by linear methods like PCA. This technique is particularly good at preserving local neighborhood structures and can uncover clusters that might be missed by linear approaches.
 
 ```{r}
 # Apply t-SNE (using subset for computational efficiency)
@@ -447,9 +600,11 @@ ggplot(tsne_df, aes(x = x, y = y, color = class)) +
   theme_minimal()
 ```
 
+The t-SNE plot reveals the non-linear structure in our mushroom data. Clear separation between green (edible) and red (poisonous) points indicates that mushroom toxicity corresponds to distinct regions in the high-dimensional feature space. Tight clusters suggest that mushrooms with similar characteristics group together naturally, while scattered points might represent outliers or transition cases.
+
 ## Feature Importance through Clustering
 
-Let's examine which features are most important for the discovered clusters:
+Now let's examine which features are most important for distinguishing between the clusters we've discovered. This analysis helps us understand what physical characteristics drive the separation between different mushroom groups.
 
 ```{r}
 # Calculate feature means by cluster
@@ -466,9 +621,11 @@ pheatmap(as.matrix(cluster_means),
          main = "Feature Means by Cluster")
 ```
 
+This heatmap shows the average value of each feature within each cluster. Red areas indicate features with higher values in a cluster, while blue areas show lower values. Features that show strong differences between clusters (red in one cluster, blue in another) are the most important for distinguishing between mushroom groups.
+
 ## Association Analysis
 
-Let's look at feature associations within the discovered clusters:
+Let's examine how key mushroom features associate with the clusters we've discovered. This analysis reveals which specific characteristics are most strongly linked to each cluster, providing biological insight into what defines each group.
 
 ```{r}
 # Convert back to factors for association analysis
@@ -479,14 +636,18 @@ features_factor$cluster <- factor(kmeans_result$cluster)
 key_features <- c("odor", "spore.print.color", "gill.color", "cap.color")
 
 for(feature in key_features) {
-  cat("\n", feature, "vs Cluster:\n")
-  print(table(features_factor[[feature]], features_factor$cluster))
+  if(feature %in% names(features_factor)) {
+    cat("\n", feature, "vs Cluster:\n")
+    print(table(features_factor[[feature]], features_factor$cluster))
+  }
 }
 ```
 
+These contingency tables show how different categories of key features distribute across our discovered clusters. Strong associations (where certain feature values appear predominantly in one cluster) indicate important distinguishing characteristics. For example, if certain odor types appear almost exclusively in one cluster, this suggests that odor is a reliable indicator for cluster membership.
+
 ## Cluster Validation
 
-Let's compute various cluster validation metrics:
+Finally, let's validate the quality of our clustering using several statistical measures. These metrics help us assess whether our discovered clusters represent meaningful, well-separated groups rather than arbitrary divisions in the data.
 
 ```{r}
 # Silhouette analysis
@@ -494,153 +655,32 @@ sil_analysis <- silhouette(kmeans_result$cluster, dist(features_numeric))
 fviz_silhouette(sil_analysis)
 ```
 
-```{r}
+The silhouette plot shows how well each mushroom fits within its assigned cluster. Values close to 1 indicate mushrooms that are well-matched to their cluster, while values near 0 suggest mushrooms that could belong to either cluster. Negative values indicate potential misclassifications where a mushroom might be better suited to a different cluster.
 
-# Within-cluster sum of squares
-wcss <- kmeans_result$tot.withinss
-cat("Within-cluster sum of squares:", wcss, "\n")
-
-# Between-cluster sum of squares
-bcss <- kmeans_result$betweenss
-cat("Between-cluster sum of squares:", bcss, "\n")
-
-# Calinski-Harabasz index
-ch_index <- (bcss / (2 - 1)) / (wcss / (nrow(features_numeric) - 2))
-cat("Calinski-Harabasz index:", ch_index, "\n")
-
-# Average silhouette width
-avg_sil_width <- mean(sil_analysis[, "sil_width"])
-cat("Average silhouette width:", avg_sil_width, "\n")
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Generalized Linear Models
-
-Let's begin with a basic generalized linear model to see what we can learn about the data. Given the binary outcome of our data, we will be using the binomial distribution to determine the probabilities. 
-
-```{r}
-
-glm_mod <- glm("class ~ .", data = train, family = "binomial")
-
-pred <- predict(glm_mod, newdata = test, type = "response")
-pred <- ifelse(pred > 0.50, "p", "e")
-
-table(pred, test$class)
-
-
-```
-
-When comparing our predictions from the model versus the actual data in our test dataset, we can see we have a perfect prediction. However, this could also be a sign of overfitting. This is especially true as we have considered all columns in the model. Let's try reducing our model to the more impactful predictors which we have found up above. 
-
-```{r}
-glm_mod_reduce <- glm("class ~ cap.shape + cap.color + odor + ring.type + stalk.root + stalk.shape + cap.surface", data = train, family = "binomial")
-
-pred <- predict(glm_mod_reduce, newdata = test, type = "response")
-pred <- ifelse(pred > 0.50, "p", "e")
-
-
-
-table(pred, test$class)
-
-
-
-```
-
-
-This model is still pretty good but we can see an example of a type 2 error as well as 2 examples of a type 1 error. This means that our model is still not perfect though. By using a simple anova comparison between the two models. We can also see that the reduced model is preferred over the full model. 
-
-```{r}
-anova(glm_mod, glm_mod_reduce)
-
-plot(glm_mod)
-
-plot(glm_mod_reduce)
-
-```
-
-
-
-## Support Vector Machine
-
-Now we will can try out some other models. Let's try a SVM model. SVM models can be excellent at find the optimal decision boundary when dealing with classification problems. We can expect our SVM model to perform better than our GLM due to the high dimensionality of the data. 
-
-```{r}
-
-svm_mod <- svm(class ~. , data=train)
-summary(svm_mod)
-
-
-
-svm_pred <- predict(svm_mod, newdata = test)
-
-table(svm_pred, test$class)
-
-```
-
-This SVM model performs better than the GLM. We see only one example of a type 1 error which is an improved result. Unfortunately, due to the multiple dimensions in our data and the fact that it is discrete, it is difficult to create a classification plot. 
-
-## Random Forest
-
-Now lets try a random forest model. These trees are known to be good models when dealing with classification problems. Will it be any better than the previous models? 
-
-```{r}
-
-
-rf_mod <- randomForest(class ~ ., ntree=1000, data = train)
-
-
-```
-
-
-```{r}
-varImpPlot(rf_mod)
-```
-
-
-With our random forest we can take a look at what our most important predictors are. As we guessed during our initial exploration, odor has a very strong affect on the model. Spore print color also appears to be a strong predictor which is interesting as we did not choose to use it in our previous GLM model. Below is a plot of the tree that was created. 
-
-```{r}
-plot.getTree(rf_mod, main = "Random Forest Tree")
-```
-
-
-
-Finally we can create our predictions and compare it against our test data. 
-
-```{r}
-
-rf_pred <- predict(rf_mod, newdata = test)
-
-table(rf_pred, test$class)
-
-```
-
-
-Now we finally have a perfect match between our model and the test data. This means that the random forest model was the best performing model of the three that were tested. 
 
 # Conclusion
 
-While all of these model do a great job at the problem we are attempting to solve, it appears that the random forest model has handled the classification with the most accuracy. With some additional tuning, I'm sure that we could get perfect results from all 3 models. In addition to its accuracy, I also find the random forest tree to be the easiest to understand the result. Theoretically anyone could take the tree output and use it to get a decent result at picking mushrooms in the wilderness. 
+Through our unsupervised learning analysis, we've discovered several interesting patterns in the mushroom dataset:
 
-If we were to expand on this problem, we would want to consider additional training with new data. Based on the initial exploration graphs, we can see that some predictors have very small sample sizes which could result in some incorrect assumptions in all our models. These models give us a great start to understanding the toxicity of mushrooms but I would still prefer a professional joins me before I stake my life on any of these models.
+1. The data shows strong natural clustering into two main groups, which remarkably align well with the edible/poisonous classification. This suggests that mushroom toxicity is reflected in their physical characteristics.
 
-[Github Link](https://github.com/patrekieta/Mushroom-Machine-Learning-Project)
+2. PCA and clustering analysis revealed that certain features (like odor, spore print color, and gill characteristics) are particularly important for distinguishing between mushroom groups.
+
+3. K-means clustering achieved high accuracy in separating mushrooms into groups that correspond to their true edibility, suggesting that unsupervised methods can effectively identify meaningful patterns without prior knowledge of the target variable.
+
+4. NMF revealed latent factors that capture combinations of features that distinguish different mushroom types, providing interpretable patterns in the data.
+
+5. While the dataset has many features, PCA showed that much of the variance can be explained by a smaller number of principal components, indicating some redundancy in the original features.
+
+6. Multiple clustering algorithms (k-means, hierarchical clustering, NMF) all identified similar groupings, providing confidence in the discovered patterns.
+
+The success of unsupervised methods in discovering the edible/poisonous distinction suggests that there are indeed clear physical patterns that distinguish safe from dangerous mushrooms, contradicting the Audobon Society Field Guide's claim that there are no easy rules. However, I would still recommend consulting with experts before using any of these patterns for actual mushroom foraging!
+
+This unsupervised analysis provides valuable insights into the natural structure of mushroom characteristics and demonstrates how clustering and dimensionality reduction techniques can reveal hidden patterns in complex datasets.
+
+[Github Link](https://github.com/patrekieta/Mushroom_Machine_Learning_Project_Unsupervised)
+
+```{r, echo = FALSE}
+quarto::quarto_render(input = "Mushroom Project.qmd", output_format = "html", output_file = "index.html")
+```
+
