@@ -1,10 +1,10 @@
 ---
 title: "Mushroom Classification Unsupervised Machine Learning"
-format: 
-  html:
-    theme: flatly
-    code-fold: false
-    embed-resources: true
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
 ---
 
 ```{r, warning=FALSE}
@@ -72,7 +72,6 @@ anyNA(data)
 We can see that there are no missing values in this dataset. Now let's visualize the distribution of features:
 
 ```{r}
-#| fig-format: svg
 #| fig-width: 10
 #| fig-height: 16
 #| column: page
@@ -680,8 +679,4 @@ The success of unsupervised methods in discovering the edible/poisonous distinct
 This unsupervised analysis provides valuable insights into the natural structure of mushroom characteristics and demonstrates how clustering and dimensionality reduction techniques can reveal hidden patterns in complex datasets.
 
 [Github Link](https://github.com/patrekieta/Mushroom_Machine_Learning_Project_Unsupervised)
-
-```{r, echo = FALSE}
-quarto::quarto_render(input = "Mushroom Project.qmd", output_format = "html", output_file = "index.html")
-```
 
